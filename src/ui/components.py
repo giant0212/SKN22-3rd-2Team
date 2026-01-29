@@ -19,6 +19,23 @@ def render_header():
 
 def render_sidebar(openai_api_key, db_client, db_stats):
     """Render the sidebar."""
+    
+    # Log status to terminal (not shown in UI)
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    if openai_api_key:
+        logger.info("✅ OpenAI API 연결됨")
+    else:
+        logger.warning("❌ OpenAI API 키 없음")
+        
+    if db_client:
+        logger.info(f"✅ Hybrid 인덱스 로드됨 - Pinecone Connected")
+        if db_stats.get('bm25_initialized'):
+            logger.info(f"   📝 BM25 (Local): {db_stats.get('bm25_docs', 0):,}개 문서")
+    else:
+        logger.warning("⚠️ DB 연결 실패")
+    
     with st.sidebar:
         st.markdown("# ⚡ 쇼특허")
         st.markdown("### Short-Cut v3.0")
@@ -27,41 +44,57 @@ def render_sidebar(openai_api_key, db_client, db_stats):
         # Apply theme CSS (Hardcoded Ivory/Light)
         apply_theme_css()
         
-        st.divider()
-        
-        # System Status
-        st.markdown("### ⚡ System Status")
-        
-        # API Status
-        if openai_api_key:
-            st.success("✅ OpenAI API 연결됨")
-        else:
-            st.error("❌ OpenAI API 키 없음")
-            st.info("`.env` 파일에 `OPENAI_API_KEY`를 설정하세요.")
-        
-        # DB Index Status
-        if db_client:
-            st.success(f"✅ Hybrid 인덱스 로드됨")
-            st.caption(f"   🌲 Pinecone: Connected")
-            if db_stats.get('bm25_initialized'):
-                st.caption(f"   📝 BM25 (Local): {db_stats.get('bm25_docs', 0):,}개 문서")
-        else:
-            st.warning("⚠️ DB 연결 실패")
-            st.info("파이프라인을 실행하세요:\n`python src/pipeline.py --stage 5`")
-        
-        st.divider()
-        
-        # Search Options
+        # ----------------------------------------------------
+        # 🔧 검색 옵션 (IPC 필터링)
+        # ----------------------------------------------------
         st.markdown("### 🔧 검색 옵션")
-        use_hybrid = st.toggle("하이브리드 검색 (Dense + BM25)", value=True)
-        if use_hybrid:
-            st.caption("RRF 알고리즘으로 Dense와 Sparse 결과를 융합합니다.")
-        else:
-            st.caption("Dense (벡터) 검색만 사용합니다.")
+        
+        IPC_CATEGORIES = {
+            "G06 (컴퓨터/AI)": "G06",
+            "H04 (통신/네트워크)": "H04",
+            "A61 (의료/헬스케어)": "A61",
+            "H01 (반도체/전자)": "H01",
+            "B60 (차량/운송)": "B60",
+            "C12 (바이오/생명)": "C12",
+            "F02 (기계/엔진)": "F02",
+        }
+        
+        selected_categories = st.multiselect(
+            "관심 기술 분야 (선택 시 필터링)",
+            options=list(IPC_CATEGORIES.keys()),
+            default=[],
+            help="특정 기술 분야(IPC)로 검색 범위를 제한하여 정확도를 높입니다."
+        )
+        
+        selected_ipc_codes = [IPC_CATEGORIES[cat] for cat in selected_categories]
         
         st.divider()
         
-        # Analysis History
+        # ----------------------------------------------------
+        # 📖 특허 가이드 (Patent Guide) - YouTube Popup
+        # ----------------------------------------------------
+        st.markdown("### 📖 특허 가이드")
+        st.caption("처음 사용하시나요? 가이드 영상을 확인하세요.")
+        
+        @st.dialog("📖 특허 출원 가이드", width="large")
+        def show_patent_guide_popup():
+            st.write("**특허 출원 전 알아야 할 핵심 정보:**")
+            
+            # YouTube video (can be changed to relevant guide video)
+            video_url = "https://www.youtube.com/watch?v=HSWXcMSneB4"
+            st.video(video_url)
+            
+            st.write("---")
+            st.caption("닫기 버튼이나 배경을 클릭하면 팝업이 닫힙니다.")
+        
+        if st.button("🎥 가이드 영상 보기", use_container_width=True):
+            show_patent_guide_popup()
+        
+        st.divider()
+        
+        # ----------------------------------------------------
+        # 📜 분석 히스토리
+        # ----------------------------------------------------
         st.markdown("### 📜 분석 히스토리")
         if st.session_state.analysis_history:
             for i, hist in enumerate(reversed(st.session_state.analysis_history[-5:])):
@@ -76,40 +109,18 @@ def render_sidebar(openai_api_key, db_client, db_stats):
         else:
             st.caption("아직 분석 기록이 없습니다.")
             
-            # Using absolute import for session manager in component might be cleaner if passed as arg or callback
-            # But currently sticking to app logic, session state modification should work.
-            if st.button("🗑️ 기록 삭제", use_container_width=True):
-                # This should be handled by a callback or clearing session state here
-                st.session_state.analysis_history = []
-                # Ideally, clear persistent history too via session manager
-                # For now, we assume the caller handles or we trigger rerun
-                # But components should avoid side-effects like reruns if possible. 
-                # Let's keep the button here but note that app.py might need to handle the action if complex.
-                # Actually, implementing the action here using session_state is fine.
-                from src.session_manager import clear_user_history
-                clear_user_history()
+        if st.button("🗑️ 기록 삭제", use_container_width=True):
+            st.session_state.analysis_history = []
+            from src.session_manager import clear_user_history
+            clear_user_history()
         
         st.divider()
         
-        # API Usage Guide
-        st.markdown("### 💰 API 비용 가이드")
-        st.caption("""
-        **분석 1회 예상 비용**: ~$0.01-0.03
-        
-        - HyDE: gpt-4o-mini
-        - Embed: text-embedding-3-small
-        - Grading: gpt-4o-mini
-        - Analysis: gpt-4o (Streaming)
-        """)
-        
-        st.divider()
-        
-        # User Info (Debug)
-        user_id = st.session_state.get("user_id", "unknown")
-        st.caption(f"👤 User ID: `{user_id}`")
+        # Team Info
         st.markdown("##### Team 뀨💕")
         
-        return use_hybrid
+        # Return tuple: (use_hybrid=True always, selected_ipc_codes)
+        return True, selected_ipc_codes
 
 
 def render_search_results(result):
@@ -198,6 +209,52 @@ def render_search_results(result):
                             )
                     except Exception as e:
                         st.error(f"PDF 생성 실패: {e}")
+        
+        # ========================================
+        # Feedback Section
+        # ========================================
+        st.divider()
+        st.markdown("### 📣 분석 품질 피드백")
+        st.caption("이 분석 결과가 도움이 되었나요? 피드백을 남겨주시면 검색 품질 개선에 활용됩니다.")
+        
+        from src.feedback_logger import save_feedback
+        
+        user_idea = result.get("user_idea", "")
+        search_results = result.get("search_results", [])
+        user_id = st.session_state.get("user_id", "unknown")
+        
+        if search_results:
+            for i, patent in enumerate(search_results[:5]):  # Top 5 patents
+                patent_id = patent.get("patent_id", f"unknown_{i}")
+                title = patent.get("title", "제목 없음")[:50]
+                grading_score = patent.get("grading_score", 0)
+                
+                col1, col2, col3 = st.columns([4, 1, 1])
+                
+                with col1:
+                    st.markdown(f"**{i+1}. {title}...** (유사도: {grading_score:.0%})")
+                
+                with col2:
+                    if st.button("👍", key=f"fb_pos_{patent_id}_{i}", help="이 특허는 관련 있어요"):
+                        save_feedback(
+                            query=user_idea,
+                            patent_id=patent_id,
+                            score=1,
+                            user_id=user_id,
+                            metadata={"grading_score": grading_score, "title": title}
+                        )
+                        st.toast(f"✅ '{patent_id}' 관련성 피드백 저장됨!")
+                
+                with col3:
+                    if st.button("👎", key=f"fb_neg_{patent_id}_{i}", help="이 특허는 관련 없어요"):
+                        save_feedback(
+                            query=user_idea,
+                            patent_id=patent_id,
+                            score=-1,
+                            user_id=user_id,
+                            metadata={"grading_score": grading_score, "title": title}
+                        )
+                        st.toast(f"❌ '{patent_id}' 비관련 피드백 저장됨!")
 
     with tab2:
         from src.ui.visualization import render_patent_map
