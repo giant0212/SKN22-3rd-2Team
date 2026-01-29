@@ -332,7 +332,14 @@ JSON 형식으로 응답하십시오:
         results = await self._execute_search(hypothetical_claim, user_idea, top_k, use_hybrid)
         return hypothetical_claim, results
 
-    async def _execute_search(self, query_text: str, context_text: str, top_k: int, use_hybrid: bool) -> List[PatentSearchResult]:
+    async def _execute_search(
+        self,
+        query_text: str,
+        context_text: str,
+        top_k: int,
+        use_hybrid: bool,
+        ipc_filters: List[str] = None
+    ) -> List[PatentSearchResult]:
         """Internal helper to execute actual search."""
         # Embed query
         query_embedding = await self.embed_text(query_text)
@@ -349,9 +356,14 @@ JSON 형식으로 응답하십시오:
                 top_k=top_k,
                 dense_weight=DENSE_WEIGHT,
                 sparse_weight=SPARSE_WEIGHT,
+                ipc_filters=ipc_filters,
             )
         else:
-            search_results = await self.db_client.async_search(query_embedding, top_k=top_k)
+            search_results = await self.db_client.async_search(
+                query_embedding, 
+                top_k=top_k,
+                ipc_filters=ipc_filters,
+            )
             
         # Convert objects
         results = []
@@ -374,6 +386,7 @@ JSON 형식으로 응답하십시오:
         user_idea: str,
         top_k: int = TOP_K_RESULTS,
         use_hybrid: bool = True,
+        ipc_filters: List[str] = None,
     ) -> Tuple[List[str], List[PatentSearchResult]]:
         """
         Multi-Query RAG Search.
@@ -388,7 +401,7 @@ JSON 형식으로 응답하십시오:
         
         # 2. Parallel Execution using asyncio.gather
         tasks = [
-            self._execute_search(query, user_idea, top_k, use_hybrid)
+            self._execute_search(query, user_idea, top_k, use_hybrid, ipc_filters=ipc_filters)
             for query in queries
         ]
         
