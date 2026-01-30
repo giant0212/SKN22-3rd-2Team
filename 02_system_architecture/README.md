@@ -17,7 +17,7 @@
 | **Self-RAG** | 검색 결과의 관련성을 평가(Grading)하고 필요 시 쿼리를 재작성(Rewrite)하여 재검색하는 지능형 루프 |
 | **HyDE** | 사용자 아이디어로부터 '가상 청구항'을 생성하여 검색의 정확도(특히 재현율)를 향상 |
 | **Multi-Query** | 아이디어를 기술적 관점, 청구항 관점, 문제해결 관점 등 다각도로 확장하여 검색 |
-| **Hybrid Search** | **Pinecone** (Dense) + **Local BM25** (Sparse) + RRF Fusion |
+| **Hybrid Search** | **Pinecone Serverless** (Dense + Sparse) Unified Index |
 | **Reranker** | Cross-Encoder 모델(`ms-marco-MiniLM`)을 사용하여 검색 결과의 순위를 정밀하게 재조정 |
 | **LLM Streaming** | 분석 과정을 실시간으로 스트리밍하여 사용자의 체감 대기 시간을 최소화 |
 | **Guardian Map** | 아이디어를 성(Castle)으로, 위협 특허를 침입자로 시각화한 **직관적 방어 전략 지도** |
@@ -39,10 +39,16 @@ graph TD
         HyDE --> MultiQuery[Multi-Query 생성]
         MultiQuery --> Search[Hybrid Search]
         
-        Search --> Dense[Pinecone (Dense Vector)]
-        Search --> Sparse[Local BM25 (Sparse Index)]
+        Search --> Encoder[Client-side Encoder]
+        Encoder -- "Dense (OpenAI)" --> Pinecone
+        Encoder -- "Sparse (BM25)" --> Pinecone
         
-        Dense & Sparse --> Mixed[RRF Fusion]
+        subgraph "Pinecone Serverless"
+            Pinecone --> Dense[Dense Index]
+            Pinecone --> Sparse[Sparse Index]
+            Dense & Sparse --> Mixed[Alpha-Weighted Scoring]
+        end
+        
         Mixed --> Rerank[Cross-Encoder Reranker]
         
         Rerank --> Grade{Grading (관련성 평가)}
@@ -59,7 +65,7 @@ graph TD
     subgraph "Offline Pipeline"
         Raw[BigQuery] --> Pre[4-Level Parser]
         Pre --> Train[Self-RAG Gen]
-        Pre --> Index[Pinecone/BM25 Indexing]
+        Pre --> Index[Vectors Upsert]
     end
 ```
 
@@ -76,8 +82,8 @@ graph TD
 ### 3.2 Hybrid Search & Reranker (`src/vector_db.py`)
 검색의 재현율(Recall)과 정밀도(Precision)를 모두 잡기 위한 전략입니다.
 - **Dense Search (Pinecone)**: 문맥적 의미 유사성을 기반으로 검색합니다. (Model: `text-embedding-3-small`)
-- **Sparse Search (BM25)**: 키워드 매칭(TF-IDF 변형)을 기반으로 검색합니다. (`rank_bm25` 라이브러리 활용 로컬 인덱싱)
-- **RRF Fusion**: 두 검색 결과의 순위를 상호보완적으로 결합합니다. (Reciprocal Rank Fusion)
+- **Sparse Search (Pinecone)**: 키워드 매칭(BM25)을 기반으로 검색합니다. (`pinecone-text` 라이브러리를 통해 쿼리를 Sparse Vector로 변환 후 전송)
+- **Hybrid Fusion**: Dense 점수와 Sparse 점수를 가중치 합(Alpha-Weighted Sum)으로 결합하여 1차 랭킹을 산출합니다.
 - **Reranker**: `Cross-Encoder`를 사용하여 상위 결과들의 문맥적 연관성을 다시 한 번 정밀하게 채점하여 최종 순위를 결정합니다.
 
 ---
@@ -86,14 +92,14 @@ graph TD
 
 ### 4.1 Vector Database (Pinecone)
 - **Type**: Serverless Index (AWS/GCP)
-- **Dimension**: 1536 (OpenAI Embedding)
-- **Role**: Dense Vector 저장 및 고속 유사도 검색
+- **Model**: Hybrid (Dense + Sparse)
+- **Role**: 모든 벡터 데이터의 통합 저장소. 별도의 로컬 DB 없이 Pinecone 하나로 검색을 완결합니다.
 
-### 4.2 Sparse Search Engine (Local)
-- **Library**: `rank_bm25` (In-memory / Local Cache)
-- **Role**: 정확한 키워드 매칭 (특허 번호, 전문 용어 등)
-- **Storage**: `data/index/patent_index_bm25.pkl`
-- **Why Local?**: Pinecone Serverless의 Sparse 지원 제약 및 비용 최적화를 위해 검증된 BM25 알고리즘을 로컬에서 수행
+### 4.2 Sparse Encoder (Client-side)
+- **Library**: `pinecone-text`
+- **Role**: 텍스트를 Pinecone이 이해하는 Sparse Vector(Token ID + Weight)로 변환합니다.
+- **Config**: `data/index/bm25_params.json` (BM25 통계 정보)
+- **Note**: 검색 시 쿼리 인코딩을 위해 사용되며, 실제 인덱싱은 Pinecone 서버에서 관리됩니다.
 
 ---
 
@@ -107,7 +113,7 @@ graph TD
 
 1. **User Input**: 사용자가 아이디어를 입력합니다.
 2. **HyDE**: "이 아이디어가 특허로 출원된다면 어떤 청구항일까?"를 상상하여 가상 문서를 생성합니다.
-3. **Retrieval**: 가상 문서와 원본 아이디어를 바탕으로 3가지 관점의 쿼리를 생성하고, Hybrid Search(Pinecone + BM25)를 수행합니다.
+3. **Retrieval**: 가상 문서와 원본 아이디어를 바탕으로 Dense/Sparse 벡터를 생성하고, Pinecone에 하이브리드 검색을 요청합니다.
 4. **Reranking**: 검색된 후보군 중 상위 문서들을 정밀 모델로 재정렬합니다.
 5. **Grading**: 상위 5개 문서가 실제로 관련이 있는지 LLM이 채점합니다. (관련성이 낮으면 쿼리 수정 후 3번으로 복귀)
 6. **Analysis**: 최종 선정된 특허들과 아이디어를 비교하여 유사도, 기술적 차이점, 침해 가능성 등을 심층 분석합니다.
